@@ -109,6 +109,7 @@ pub fn kv_router_config_from_dynamo_env() -> KvRouterConfig {
         router_queue_threshold = ?config.router_queue_threshold,
         router_policy_config = ?config.router_policy_config,
         router_predicted_ttl_secs = ?config.router_predicted_ttl_secs,
+        agent_aware_kv_routing = config.agent_aware_kv_routing,
         "KvRouterConfig initialized (DYN_* env overrides applied)"
     );
     config
@@ -175,6 +176,9 @@ fn kv_router_config_from_lookup(get_env: impl Fn(&str) -> Option<String>) -> KvR
     }
     if let Some(value) = parse_f64(&get_env, "DYN_ROUTER_PREDICTED_TTL_SECS") {
         config.router_predicted_ttl_secs = Some(value);
+    }
+    if let Some(value) = parse_bool(&get_env, "DYN_ROUTER_AGENT_AWARE_KV_ROUTING") {
+        config.agent_aware_kv_routing = value;
     }
 
     config
@@ -411,6 +415,7 @@ struct KvRouterConfigSerde {
     shared_cache_multiplier: f64,
     shared_cache_type: SharedCacheType,
     router_predicted_ttl_secs: Option<f64>,
+    agent_aware_kv_routing: bool,
 }
 
 impl Default for KvRouterConfigSerde {
@@ -442,6 +447,7 @@ impl Default for KvRouterConfigSerde {
             shared_cache_multiplier: config.shared_cache_multiplier,
             shared_cache_type: config.shared_cache_type,
             router_predicted_ttl_secs: config.router_predicted_ttl_secs,
+            agent_aware_kv_routing: config.agent_aware_kv_routing,
         }
     }
 }
@@ -561,6 +567,11 @@ pub struct KvRouterConfig {
     /// maximum overlap.
     #[serde(default)]
     pub router_predicted_ttl_secs: Option<f64>,
+
+    /// Enable privacy-safe Agent KV inventory as a bounded second-stage routing signal.
+    /// Disabled by default; the legacy selector is byte-for-byte unchanged when disabled.
+    #[serde(default)]
+    pub agent_aware_kv_routing: bool,
 }
 
 impl Default for KvRouterConfig {
@@ -592,6 +603,7 @@ impl Default for KvRouterConfig {
             shared_cache_multiplier: 0.0,
             shared_cache_type: SharedCacheType::default(),
             router_predicted_ttl_secs: None,
+            agent_aware_kv_routing: false,
         }
     }
 }
@@ -638,6 +650,7 @@ impl TryFrom<KvRouterConfigSerde> for KvRouterConfig {
             shared_cache_multiplier: compat.shared_cache_multiplier,
             shared_cache_type: compat.shared_cache_type,
             router_predicted_ttl_secs: compat.router_predicted_ttl_secs,
+            agent_aware_kv_routing: compat.agent_aware_kv_routing,
         };
         config.validate()?;
         Ok(config)
@@ -866,6 +879,7 @@ mod tests {
             ("DYN_ROUTER_TRACK_OUTPUT_BLOCKS", "on"),
             ("DYN_ROUTER_TRACK_PREFILL_TOKENS", "false"),
             ("DYN_ROUTER_QUEUE_THRESHOLD", "4.5"),
+            ("DYN_ROUTER_AGENT_AWARE_KV_ROUTING", "true"),
         ]);
 
         assert_eq!(config.overlap_score_credit, 0.25);
@@ -878,10 +892,16 @@ mod tests {
         assert!(config.router_track_output_blocks);
         assert!(!config.router_track_prefill_tokens);
         assert_eq!(config.router_queue_threshold, Some(4.5));
+        assert!(config.agent_aware_kv_routing);
 
         let predicted = config_from_values(&[("DYN_ROUTER_PREDICTED_TTL_SECS", "60")]);
         assert_eq!(predicted.router_predicted_ttl_secs, Some(60.0));
         assert!(predicted.validate_config().is_ok());
+    }
+
+    #[test]
+    fn agent_aware_kv_routing_defaults_off() {
+        assert!(!KvRouterConfig::default().agent_aware_kv_routing);
     }
 
     #[test]

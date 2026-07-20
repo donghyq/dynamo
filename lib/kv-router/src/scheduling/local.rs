@@ -306,6 +306,7 @@ where
             session_id,
             overlap,
             shared_cache_hits,
+            agent_cache,
         } = request;
         let request = SchedulingRequest {
             mode,
@@ -324,6 +325,7 @@ where
             session_id,
             overlap,
             shared_cache_hits,
+            agent_cache,
             worker_loads: FxHashMap::default(),
             resp_tx: Some(resp_tx),
         };
@@ -483,6 +485,7 @@ where
             pinned_worker,
             allowed_worker_ids,
             shared_cache_hits,
+            agent_cache: None,
         })
         .await
     }
@@ -886,6 +889,7 @@ mod tests {
             session_id: None,
             overlap: OverlapSignals::default(),
             shared_cache_hits: None,
+            agent_cache: None,
         }
     }
 

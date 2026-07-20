@@ -70,6 +70,7 @@ struct BestMatchArgs<'a> {
     pinned_worker: Option<WorkerWithDpRank>,
     allowed_worker_ids: Option<HashSet<WorkerId>>,
     routing_constraints: RoutingConstraints,
+    agent_cache: Option<dynamo_kv_router::scheduling::AgentCacheRoutingSignals>,
     scheduler_tracked: bool,
 }
 
@@ -94,6 +95,7 @@ impl KvPushRouter {
                 args.pinned_worker,
                 args.allowed_worker_ids,
                 args.routing_constraints,
+                args.agent_cache,
             )
             .await?;
 
@@ -148,6 +150,7 @@ impl KvPushRouter {
         let routing_constraints = routing
             .and_then(|routing| routing.routing_constraints.clone())
             .unwrap_or_default();
+        let agent_cache = routing.and_then(|routing| routing.agent_cache.clone());
         let explicit_pin = pinned_worker_hint(phase, routing);
         let SelectionOptions {
             affinity_worker,
@@ -176,6 +179,7 @@ impl KvPushRouter {
                     pinned_worker: None,
                     allowed_worker_ids,
                     routing_constraints: routing_constraints.clone(),
+                    agent_cache: agent_cache.clone(),
                     scheduler_tracked: !is_query_only,
                 })
                 .await?;
@@ -249,6 +253,7 @@ impl KvPushRouter {
             pinned_worker: Some(pinned_worker),
             allowed_worker_ids,
             routing_constraints,
+            agent_cache,
             scheduler_tracked: !is_query_only,
         })
         .await

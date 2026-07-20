@@ -647,6 +647,9 @@ pub struct RouterRequestMetrics {
     pub kv_transfer_estimated_latency_seconds: prometheus::Histogram,
     pub shared_cache_hit_rate: prometheus::Histogram,
     pub shared_cache_beyond_blocks: prometheus::Histogram,
+    /// Agent-aware routing outcomes. Labels are fixed enums and never include request,
+    /// tenant, session, worker, query, or identity values.
+    pub agent_cache_routing_total: prometheus::IntCounterVec,
 }
 
 static ROUTER_REQUEST_METRICS: OnceLock<Arc<RouterRequestMetrics>> = OnceLock::new();
@@ -763,6 +766,14 @@ impl RouterRequestMetrics {
                         Some(prometheus::exponential_buckets(1.0, 2.0, 12).unwrap()),
                     )
                     .expect("failed to create router_shared_cache_beyond_blocks");
+                let agent_cache_routing_total = metrics
+                    .create_intcountervec(
+                        &router_metric("agent_cache_routing_total"),
+                        "Agent-aware KV routing decisions by bounded action, reason, and tier",
+                        &["action", "reason", "tier"],
+                        extra_labels,
+                    )
+                    .expect("failed to create router_agent_cache_routing_total");
                 Arc::new(Self {
                     requests_total,
                     time_to_first_token_seconds,
@@ -773,9 +784,23 @@ impl RouterRequestMetrics {
                     kv_transfer_estimated_latency_seconds,
                     shared_cache_hit_rate,
                     shared_cache_beyond_blocks,
+                    agent_cache_routing_total,
                 })
             })
             .clone()
+    }
+
+    pub fn observe_agent_cache_decision(
+        &self,
+        decision: dynamo_kv_router::scheduling::AgentCacheDecision,
+    ) {
+        self.agent_cache_routing_total
+            .with_label_values(&[
+                decision.action.metric_label(),
+                decision.fallback_reason.metric_label(),
+                decision.tier.metric_label(),
+            ])
+            .inc();
     }
 }
 

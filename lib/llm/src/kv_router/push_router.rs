@@ -833,6 +833,7 @@ mod tests {
                     session_id: None,
                     overlap: OverlapSignals::default(),
                     shared_cache_hits: None,
+                    agent_cache: None,
                 })
                 .await
                 .unwrap();

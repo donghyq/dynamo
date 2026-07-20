@@ -8,6 +8,7 @@ use derive_builder::Builder;
 use dynamo_kv_router::{
     config::RouterConfigOverride,
     protocols::{BlockExtraInfo, RoutingConstraints, WorkerId},
+    scheduling::AgentCacheRoutingSignals,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -84,6 +85,11 @@ pub struct RoutingHints {
     /// Request routing constraints used for worker compatibility and soft preference.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub routing_constraints: Option<RoutingConstraints>,
+
+    /// Privacy-safe logical KV inventory. Raw prompts/tokens and physical block handles are not
+    /// accepted by this adapter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_cache: Option<AgentCacheRoutingSignals>,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, Default)]

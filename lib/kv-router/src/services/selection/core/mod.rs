@@ -81,6 +81,7 @@ struct SelectionOperation {
     pinned_worker: Option<WorkerWithDpRank>,
     allowed_worker_ids: Option<HashSet<WorkerId>>,
     routing_constraints: RoutingConstraints,
+    agent_cache: Option<crate::scheduling::AgentCacheRoutingSignals>,
 }
 
 /// Resolved inputs for booking a reservation, shared by the cached and explicit
@@ -620,6 +621,7 @@ impl SelectionCore {
                 pinned_worker: req.pinned_worker,
                 allowed_worker_ids: req.allowed_worker_ids,
                 routing_constraints: req.routing_constraints,
+                agent_cache: req.agent_cache,
             },
             false,
         )
@@ -655,6 +657,7 @@ impl SelectionCore {
                 pinned_worker: req.pinned_worker,
                 allowed_worker_ids: req.allowed_worker_ids,
                 routing_constraints: req.routing_constraints,
+                agent_cache: req.agent_cache,
             },
             true,
         )
@@ -679,6 +682,7 @@ impl SelectionCore {
             pinned_worker,
             allowed_worker_ids,
             routing_constraints,
+            agent_cache,
         } = operation;
         self.ensure_running()?;
 
@@ -733,6 +737,7 @@ impl SelectionCore {
             allowed_worker_ids,
             routing_constraints,
             shared_cache_hits: None,
+            agent_cache,
         };
         let response = tokio::select! {
             biased;

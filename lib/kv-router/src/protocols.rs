@@ -547,6 +547,10 @@ pub struct WorkerSelectionResult {
 
     /// Approximate cached-token count derived from the weighted cache hit.
     pub cached_tokens: usize,
+
+    /// Optional bounded second-stage decision. Physical execution remains owned by the engine;
+    /// this is routing observability, not a KV block handle.
+    pub agent_cache_decision: Option<crate::scheduling::AgentCacheDecision>,
 }
 
 /// Active load metrics for a worker, used for overload detection.

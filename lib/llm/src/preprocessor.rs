@@ -1075,6 +1075,7 @@ impl OpenAIPreprocessor {
                     .routing_constraints
                     .clone()
                     .map(routing_constraints_to_kv),
+                agent_cache: None,
             };
             builder.routing(Some(routing));
         } else if lora_name.is_some() || cache_namespace.is_some() {

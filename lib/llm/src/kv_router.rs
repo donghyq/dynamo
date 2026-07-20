@@ -545,6 +545,7 @@ where
             pinned_worker,
             allowed_worker_ids,
             routing_constraints,
+            None,
             false,
         )
         .await
@@ -569,6 +570,7 @@ where
         pinned_worker: Option<WorkerWithDpRank>,
         allowed_worker_ids: Option<HashSet<WorkerId>>,
         routing_constraints: RoutingConstraints,
+        agent_cache: Option<scheduling::AgentCacheRoutingSignals>,
     ) -> anyhow::Result<FindBestMatchOutcome> {
         self.find_best_match_details_with_policy_class_inner(
             context_id,
@@ -587,6 +589,7 @@ where
             pinned_worker,
             allowed_worker_ids,
             routing_constraints,
+            agent_cache,
             true,
         )
         .await
@@ -611,6 +614,7 @@ where
         pinned_worker: Option<WorkerWithDpRank>,
         allowed_worker_ids: Option<HashSet<WorkerId>>,
         routing_constraints: RoutingConstraints,
+        agent_cache: Option<scheduling::AgentCacheRoutingSignals>,
         use_admission: bool,
     ) -> anyhow::Result<FindBestMatchOutcome> {
         let start = Instant::now();
@@ -726,6 +730,7 @@ where
                 allowed_worker_ids,
                 routing_constraints,
                 shared_cache_hits,
+                agent_cache,
             })
             .instrument(tracing::info_span!("kv_router.schedule"))
             .await
@@ -760,6 +765,11 @@ where
             }
             let beyond = hits.hits_beyond(response.effective_overlap_blocks.round() as u32);
             m.shared_cache_beyond_blocks.observe(beyond as f64);
+        }
+        if let Some(decision) = response.agent_cache_decision
+            && let Some(m) = metrics::RouterRequestMetrics::get()
+        {
+            m.observe_agent_cache_decision(decision);
         }
 
         #[cfg(feature = "bench")]
@@ -1391,6 +1401,7 @@ mod tests {
                 required_blocks: request.isl_tokens.div_ceil(block_size as usize) as u64,
                 effective_overlap_blocks: 0.0,
                 cached_tokens: 0,
+                agent_cache_decision: None,
             })
         }
     }

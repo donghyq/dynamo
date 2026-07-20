@@ -8,6 +8,7 @@ use dynamo_tokens::SequenceHash;
 use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 
+use super::agent_cache::AgentCacheRoutingSignals;
 use super::config::RouterConfigOverride;
 use super::filter::RoutingEligibility;
 use super::overlap::{OverlapSignals, SelectedWorkerTierSnapshot};
@@ -78,6 +79,7 @@ pub struct SchedulingResponse {
     pub selected_worker_tiers: SelectedWorkerTierSnapshot,
     pub request_progress: Option<RequestProgressUpdater>,
     pub admission_lease: Option<super::queue::AdmissionLease>,
+    pub agent_cache_decision: Option<super::AgentCacheDecision>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -169,6 +171,7 @@ pub struct ScheduleRequest {
     pub session_id: Option<String>,
     pub overlap: OverlapSignals,
     pub shared_cache_hits: Option<SharedCacheHits>,
+    pub agent_cache: Option<AgentCacheRoutingSignals>,
 }
 
 /// Actor-owned admission request.
@@ -198,6 +201,7 @@ pub struct SchedulingRequest {
     // Overlap and cache signals.
     pub overlap: OverlapSignals,
     pub shared_cache_hits: Option<SharedCacheHits>,
+    pub agent_cache: Option<AgentCacheRoutingSignals>,
 
     // Load state computed during admission.
     pub worker_loads: FxHashMap<WorkerWithDpRank, WorkerLoadProjection>,

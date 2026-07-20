@@ -1559,6 +1559,7 @@ impl<
             selected_worker_tiers,
             request_progress,
             admission_lease: None,
+            agent_cache_decision: selection.agent_cache_decision,
         };
 
         if !request.mode.is_tracked() {
@@ -1923,6 +1924,7 @@ mod tests {
                 required_blocks: request.request_blocks(block_size),
                 effective_overlap_blocks: request.effective_overlap_blocks_for(worker),
                 cached_tokens: request.effective_cached_tokens_for(worker),
+                agent_cache_decision: None,
             })
         }
     }
@@ -2357,6 +2359,7 @@ mod tests {
             allowed_worker_ids: None,
             routing_constraints: crate::protocols::RoutingConstraints::default(),
             shared_cache_hits: None,
+            agent_cache: None,
             resp_tx: Some(tx),
         };
         (req, rx)

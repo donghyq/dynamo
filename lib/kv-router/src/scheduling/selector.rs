@@ -325,6 +325,7 @@ impl<C: WorkerConfigLike> WorkerSelector<C> for DefaultWorkerSelector {
                 required_blocks: request_blocks,
                 effective_overlap_blocks,
                 cached_tokens,
+                agent_cache_decision: None,
             });
         }
 
@@ -367,7 +368,68 @@ impl<C: WorkerConfigLike> WorkerSelector<C> for DefaultWorkerSelector {
             }
         };
 
-        let (best_worker, best_logit) = if temperature == 0.0 {
+        let agent_rerank_enabled = self.kv_router_config.agent_aware_kv_routing
+            && request
+                .agent_cache
+                .as_ref()
+                .is_some_and(|signals| signals.is_valid());
+        let (best_worker, best_logit, agent_cache_decision) = if agent_rerank_enabled {
+            // Stage one is the unchanged Dynamo score. Stage two considers only a small
+            // shortlist and adds a bounded, fail-closed cache action delta.
+            const AGENT_RERANK_TOP_K: usize = 4;
+            const MAX_AGENT_ADJUSTMENT_BLOCKS: f64 = 8.0;
+            const AGENT_INVENTORY_TTL_MS: u64 = 5_000;
+            let mut candidates = Vec::new();
+            eligibility.for_each_eligible_worker_rank(workers, |worker, _| {
+                candidates.push((worker, get_score(worker)));
+            });
+            candidates.sort_unstable_by(|a, b| a.1.total_cmp(&b.1));
+            candidates.truncate(AGENT_RERANK_TOP_K);
+            let max_adjustment = MAX_AGENT_ADJUSTMENT_BLOCKS
+                .min(request_blocks as f64 * 0.25)
+                .max(0.0);
+            let signals = request.agent_cache.as_ref().expect("checked above");
+            let mut reranked = FxHashMap::default();
+            for (worker, base_score) in candidates {
+                let decision = signals.decision_for_online(
+                    worker,
+                    block_size,
+                    AGENT_INVENTORY_TTL_MS,
+                    max_adjustment,
+                    |source| {
+                        workers.get(&source.worker_id).is_some_and(|config| {
+                            let start = config.data_parallel_start_rank();
+                            let end = start.saturating_add(config.data_parallel_size());
+                            (start..end).contains(&source.dp_rank)
+                        })
+                    },
+                );
+                tracing::debug!(
+                    worker_id = worker.worker_id,
+                    dp_rank = worker.dp_rank,
+                    ?decision.action,
+                    ?decision.fallback_reason,
+                    adjustment_blocks = decision.score_adjustment,
+                    "Agent-aware KV second-stage candidate"
+                );
+                reranked.insert(worker, base_score + decision.score_adjustment);
+            }
+            let (worker, score) = softmax_sample(&reranked, temperature);
+            let decision = signals.decision_for_online(
+                worker,
+                block_size,
+                AGENT_INVENTORY_TTL_MS,
+                max_adjustment,
+                |source| {
+                    workers.get(&source.worker_id).is_some_and(|config| {
+                        let start = config.data_parallel_start_rank();
+                        let end = start.saturating_add(config.data_parallel_size());
+                        (start..end).contains(&source.dp_rank)
+                    })
+                },
+            );
+            (worker, score, Some(decision))
+        } else if temperature == 0.0 {
             let mut best_worker = None;
             let mut best_logit = f64::INFINITY;
             let mut tie_count = 0usize;
@@ -389,10 +451,11 @@ impl<C: WorkerConfigLike> WorkerSelector<C> for DefaultWorkerSelector {
                 }
             });
 
-            (
+            let (worker, score) = (
                 best_worker.expect("eligible worker rank non-empty"),
                 best_logit,
-            )
+            );
+            (worker, score, None)
         } else {
             let mut worker_logits = FxHashMap::default();
             eligibility.for_each_eligible_worker_rank(workers, |worker, _| {
@@ -400,7 +463,8 @@ impl<C: WorkerConfigLike> WorkerSelector<C> for DefaultWorkerSelector {
                 worker_logits.insert(worker, score);
             });
 
-            softmax_sample(&worker_logits, temperature)
+            let (worker, score) = softmax_sample(&worker_logits, temperature);
+            (worker, score, None)
         };
 
         let best_host_pinned_overlap_blocks = request
@@ -437,6 +501,7 @@ impl<C: WorkerConfigLike> WorkerSelector<C> for DefaultWorkerSelector {
                 required_blocks: request_blocks,
                 effective_overlap_blocks,
                 cached_tokens,
+                agent_cache_decision,
             });
         }
 
@@ -465,6 +530,7 @@ impl<C: WorkerConfigLike> WorkerSelector<C> for DefaultWorkerSelector {
             required_blocks: request_blocks,
             effective_overlap_blocks: best_overlap,
             cached_tokens: best_cached_tokens,
+            agent_cache_decision,
         })
     }
 }
@@ -475,7 +541,10 @@ mod tests {
 
     use super::*;
     use crate::protocols::{SharedCacheHits, WorkerConfigLike};
-    use crate::scheduling::{OverlapSignals, ScheduleMode};
+    use crate::scheduling::{
+        AgentCacheLifecycle, AgentCacheMissReason, AgentCacheRoutingSignals, AgentCacheStatus,
+        AgentCacheTier, OverlapSignals, ScheduleMode,
+    };
 
     #[derive(Clone, Default)]
     struct TaintedWorkerConfig {
@@ -529,6 +598,7 @@ mod tests {
             allowed_worker_ids: None,
             routing_constraints: crate::protocols::RoutingConstraints::default(),
             shared_cache_hits: None,
+            agent_cache: None,
             resp_tx: None,
         }
     }
@@ -548,6 +618,161 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    fn local_agent_cache(worker: WorkerWithDpRank, now_ms: u64) -> AgentCacheRoutingSignals {
+        AgentCacheRoutingSignals {
+            namespace_digest: "namespace_digest".into(),
+            identity_digest: "identity_digest".into(),
+            expected_epoch: 7,
+            now_ms,
+            soft_affinity_worker: None,
+            statuses: vec![AgentCacheStatus {
+                worker,
+                namespace_digest: "namespace_digest".into(),
+                identity_digest: "identity_digest".into(),
+                reusable_tokens: 128,
+                estimated_bytes: None,
+                actual_bytes: None,
+                tier: AgentCacheTier::Device,
+                epoch: 7,
+                timestamp_ms: now_ms,
+                physical_exact_hit: true,
+                planner_candidate: true,
+                lease_expires_at_ms: None,
+                lifecycle: AgentCacheLifecycle::Active,
+                miss_reason: AgentCacheMissReason::None,
+                lookup_cost_blocks: None,
+                restore_cost_blocks: None,
+                transfer_bytes_per_block_cost: None,
+            }],
+        }
+    }
+
+    #[test]
+    fn agent_cache_local_hit_wins_only_small_load_gap() {
+        use crate::test_utils::SimpleWorkerConfig;
+
+        let selector = DefaultWorkerSelector::new(
+            Some(KvRouterConfig {
+                agent_aware_kv_routing: true,
+                router_temperature: 0.0,
+                ..Default::default()
+            }),
+            "test",
+        );
+        let workers = HashMap::from([
+            (0, SimpleWorkerConfig::default()),
+            (1, SimpleWorkerConfig::default()),
+        ]);
+        let cached = WorkerWithDpRank::from_worker_id(0);
+        let other = WorkerWithDpRank::from_worker_id(1);
+        let mut request = base_request(128);
+        request.agent_cache = Some(local_agent_cache(cached, 1_000));
+        request.worker_loads =
+            worker_loads_with_active_decode(FxHashMap::from_iter([(cached, 1), (other, 0)]));
+
+        let selected = selector
+            .select_worker(&workers, &request, request.eligibility(), 16)
+            .unwrap();
+        assert_eq!(selected.worker, cached);
+
+        request.worker_loads =
+            worker_loads_with_active_decode(FxHashMap::from_iter([(cached, 20), (other, 0)]));
+        let selected = selector
+            .select_worker(&workers, &request, request.eligibility(), 16)
+            .unwrap();
+        assert_eq!(
+            selected.worker, other,
+            "severe congestion must dominate cache credit"
+        );
+    }
+
+    #[test]
+    fn agent_cache_feature_flag_off_preserves_base_selection() {
+        use crate::test_utils::SimpleWorkerConfig;
+
+        let selector = DefaultWorkerSelector::new(
+            Some(KvRouterConfig {
+                agent_aware_kv_routing: false,
+                router_temperature: 0.0,
+                ..Default::default()
+            }),
+            "test",
+        );
+        let workers = HashMap::from([
+            (0, SimpleWorkerConfig::default()),
+            (1, SimpleWorkerConfig::default()),
+        ]);
+        let cached = WorkerWithDpRank::from_worker_id(0);
+        let baseline = WorkerWithDpRank::from_worker_id(1);
+        let mut request = base_request(128);
+        request.agent_cache = Some(local_agent_cache(cached, 1_000));
+        request.worker_loads =
+            worker_loads_with_active_decode(FxHashMap::from_iter([(cached, 4), (baseline, 0)]));
+
+        let selected = selector
+            .select_worker(&workers, &request, request.eligibility(), 16)
+            .unwrap();
+        assert_eq!(selected.worker, baseline);
+        assert!(selected.agent_cache_decision.is_none());
+    }
+
+    #[test]
+    fn stale_planner_only_and_offline_inventory_do_not_change_selection() {
+        use crate::test_utils::SimpleWorkerConfig;
+
+        let selector = DefaultWorkerSelector::new(
+            Some(KvRouterConfig {
+                agent_aware_kv_routing: true,
+                router_temperature: 0.0,
+                ..Default::default()
+            }),
+            "test",
+        );
+        let workers = HashMap::from([
+            (0, SimpleWorkerConfig::default()),
+            (1, SimpleWorkerConfig::default()),
+        ]);
+        let preferred = WorkerWithDpRank::from_worker_id(0);
+        let baseline = WorkerWithDpRank::from_worker_id(1);
+        let mut request = base_request(128);
+        request.worker_loads =
+            worker_loads_with_active_decode(FxHashMap::from_iter([(preferred, 4), (baseline, 0)]));
+
+        let mut planner_only = local_agent_cache(preferred, 1_000);
+        planner_only.statuses[0].physical_exact_hit = false;
+        request.agent_cache = Some(planner_only);
+        assert_eq!(
+            selector
+                .select_worker(&workers, &request, request.eligibility(), 16)
+                .unwrap()
+                .worker,
+            baseline
+        );
+
+        let mut stale = local_agent_cache(preferred, 10_000);
+        stale.statuses[0].timestamp_ms = 1;
+        request.agent_cache = Some(stale);
+        assert_eq!(
+            selector
+                .select_worker(&workers, &request, request.eligibility(), 16)
+                .unwrap()
+                .worker,
+            baseline
+        );
+
+        request.agent_cache = Some(local_agent_cache(
+            WorkerWithDpRank::from_worker_id(99),
+            1_000,
+        ));
+        assert_eq!(
+            selector
+                .select_worker(&workers, &request, request.eligibility(), 16)
+                .unwrap()
+                .worker,
+            baseline
+        );
     }
 
     #[test]
@@ -697,6 +922,7 @@ mod tests {
             allowed_worker_ids: None,
             routing_constraints: crate::protocols::RoutingConstraints::default(),
             shared_cache_hits: None,
+            agent_cache: None,
             resp_tx: None,
         };
         let mut selected = [false; 3];
@@ -844,6 +1070,7 @@ mod tests {
                 preferred_taints: HashMap::new(),
             },
             shared_cache_hits: None,
+            agent_cache: None,
             resp_tx: None,
         };
 
@@ -895,6 +1122,7 @@ mod tests {
                 preferred_taints: HashMap::new(),
             },
             shared_cache_hits: None,
+            agent_cache: None,
             resp_tx: None,
         };
 
@@ -964,6 +1192,7 @@ mod tests {
                     preferred_taints: HashMap::new(),
                 },
                 shared_cache_hits: None,
+                agent_cache: None,
                 resp_tx: None,
             };
 
@@ -1031,6 +1260,7 @@ mod tests {
                 preferred_taints: HashMap::from([("mdc-a".to_string(), 0.85)]),
             },
             shared_cache_hits: None,
+            agent_cache: None,
             resp_tx: None,
         };
 
@@ -1094,6 +1324,7 @@ mod tests {
                 preferred_taints: HashMap::from([("mdc-a".to_string(), -0.25)]),
             },
             shared_cache_hits: None,
+            agent_cache: None,
             resp_tx: None,
         };
 
@@ -1170,6 +1401,7 @@ mod tests {
             allowed_worker_ids: None,
             routing_constraints: crate::protocols::RoutingConstraints::default(),
             shared_cache_hits: Some(shared_hits),
+            agent_cache: None,
             resp_tx: Some(tx),
         };
 
@@ -1240,6 +1472,7 @@ mod tests {
             allowed_worker_ids: None,
             routing_constraints: crate::protocols::RoutingConstraints::default(),
             shared_cache_hits: None,
+            agent_cache: None,
             resp_tx: Some(tx),
         };
 
@@ -1461,6 +1694,7 @@ mod tests {
             allowed_worker_ids: None,
             routing_constraints: crate::protocols::RoutingConstraints::default(),
             shared_cache_hits: None,
+            agent_cache: None,
             resp_tx: Some(tx),
         };
 
@@ -1516,6 +1750,7 @@ mod tests {
             allowed_worker_ids: None,
             routing_constraints: crate::protocols::RoutingConstraints::default(),
             shared_cache_hits: None,
+            agent_cache: None,
             resp_tx: Some(tx),
         };
 

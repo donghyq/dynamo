@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 use crate::protocols::{
     DpRank, KvTransferEnforcement, RoutingConstraints, WorkerConfigLike, WorkerId, WorkerWithDpRank,
 };
+use crate::scheduling::AgentCacheRoutingSignals;
 use crate::scheduling::PotentialLoad;
 use crate::scheduling::config::RouterConfigOverride;
 pub use crate::scheduling::{OverlapScoresResponse, SharedCacheOverlapScore, WorkerOverlapScore};
@@ -425,6 +426,8 @@ pub struct SelectRequest {
     pub allowed_worker_ids: Option<HashSet<WorkerId>>,
     #[serde(default)]
     pub routing_constraints: RoutingConstraints,
+    #[serde(default)]
+    pub agent_cache: Option<AgentCacheRoutingSignals>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -453,6 +456,8 @@ pub struct SelectAndReserveRequest {
     pub allowed_worker_ids: Option<HashSet<WorkerId>>,
     #[serde(default)]
     pub routing_constraints: RoutingConstraints,
+    #[serde(default)]
+    pub agent_cache: Option<AgentCacheRoutingSignals>,
 }
 
 /// Booking request: replay the selection cached under `selection_id`, or book

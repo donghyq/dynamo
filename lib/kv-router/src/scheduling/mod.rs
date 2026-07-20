@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 
+pub mod agent_cache;
 pub mod config;
 mod filter;
 mod local;
@@ -15,6 +16,7 @@ mod queue_admission;
 pub mod selector;
 
 mod types;
+pub use agent_cache::*;
 pub use filter::*;
 pub use local::LocalScheduler;
 pub use overlap::{
